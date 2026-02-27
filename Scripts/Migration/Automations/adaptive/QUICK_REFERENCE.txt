@@ -1,0 +1,209 @@
+╔═══════════════════════════════════════════════════════════════════════════╗
+║                                                                           ║
+║        ADAPTIVE SECURE VM MIGRATION - QUICK REFERENCE                     ║
+║                                                                           ║
+╚═══════════════════════════════════════════════════════════════════════════╝
+
+┌─────────────────────────────────────────────────────────────────────────┐
+│ BASIC USAGE                                                              │
+└─────────────────────────────────────────────────────────────────────────┘
+
+./adaptive_migration_selector.sh --security=<LEVEL> --urgency=<LEVEL> [OPTIONS]
+
+
+┌─────────────────────────────────────────────────────────────────────────┐
+│ COMMON SCENARIOS                                                         │
+└─────────────────────────────────────────────────────────────────────────┘
+
+🚨 EMERGENCY (Hardware Failure Imminent)
+   └─► ./adaptive_migration_selector.sh --security=high --urgency=high \
+           --vm=critical_vm --iterations=1
+
+🔧 MAINTENANCE (Planned Server Shutdown)
+   └─► ./adaptive_migration_selector.sh --security=high --urgency=low \
+           --vm=app_vm --iterations=5
+
+⚖️  LOAD BALANCING (Redistribute VMs)
+   └─► ./adaptive_migration_selector.sh --security=medium --urgency=medium \
+           --vm=web_vm --size=2048
+
+⚡ PERFORMANCE PRIORITY (Low Security OK)
+   └─► ./adaptive_migration_selector.sh --security=low --urgency=low \
+           --vm=batch_vm --size=4096
+
+
+┌─────────────────────────────────────────────────────────────────────────┐
+│ STRATEGY SELECTION LOGIC                                                 │
+└─────────────────────────────────────────────────────────────────────────┘
+
+┌──────────────────┬──────────────┬────────────────┬──────────────────┐
+│ Security Level   │ Urgency      │ Resources      │ → Strategy       │
+├──────────────────┼──────────────┼────────────────┼──────────────────┤
+│ HIGH             │ Low/Medium   │ Available      │ → IPsec         │
+│ HIGH             │ High         │ Any            │ → TLS           │
+│ MEDIUM           │ High         │ Any            │ → SSH           │
+│ MEDIUM           │ Low          │ Available      │ → TLS           │
+│ LOW              │ Any          │ Available      │ → TLS           │
+│ ANY              │ Any          │ CONSTRAINED    │ → DEFAULT       │
+└──────────────────┴──────────────┴────────────────┴──────────────────┘
+
+Resource Constraint = (CPU Usage > 75% AND Bandwidth Usage > 75%)
+
+
+┌─────────────────────────────────────────────────────────────────────────┐
+│ URGENCY LEVELS (Based on SOLive Paper)                                  │
+└─────────────────────────────────────────────────────────────────────────┘
+
+HIGH   → Emergency evacuation (e.g., hardware failure)
+         • Fastest migration possible
+         • May impact running apps
+         • Uses Hybrid migration mode
+
+MEDIUM → Balanced approach (e.g., load balancing)
+         • Reasonable migration time
+         • Moderate app impact
+         • Uses Precopy migration mode
+
+LOW    → Routine maintenance (e.g., planned shutdown)
+         • Patient, thorough migration
+         • Minimal app disruption
+         • Uses Precopy migration mode
+
+
+┌─────────────────────────────────────────────────────────────────────────┐
+│ RESOURCE MONITORING                                                      │
+└─────────────────────────────────────────────────────────────────────────┘
+
+The script automatically monitors:
+  • CPU Load       → via 'top' command
+  • Bandwidth      → via /sys/class/net/<nic>/statistics
+  • Sample Period  → 2 seconds for bandwidth
+
+Categorization:
+  0-25% usage   → LOW load    (more resources available)
+  25-50% usage  → LOW load    (good resources available)
+  50-75% usage  → MEDIUM load (moderate resources)
+  75-100% usage → HIGH load   (constrained resources)
+
+
+┌─────────────────────────────────────────────────────────────────────────┐
+│ MIGRATION STRATEGIES                                                     │
+└─────────────────────────────────────────────────────────────────────────┘
+
+┌─────────┬──────────────┬─────────────────┬──────────────────────────┐
+│Strategy │ Security     │ Performance     │ Use Case                 │
+├─────────┼──────────────┼─────────────────┼──────────────────────────┤
+│ IPsec   │ ★★★★★       │ ★★★☆☆          │ Maximum security needed  │
+│ TLS     │ ★★★★☆       │ ★★★★☆          │ Balanced security+speed  │
+│ SSH     │ ★★★☆☆       │ ★★☆☆☆          │ Simple, reliable tunnel  │
+│ DEFAULT │ ☆☆☆☆☆       │ ★★★★★          │ Performance critical     │
+└─────────┴──────────────┴─────────────────┴──────────────────────────┘
+
+
+┌─────────────────────────────────────────────────────────────────────────┐
+│ ALL OPTIONS                                                              │
+└─────────────────────────────────────────────────────────────────────────┘
+
+--security=LEVEL      Security level (high|medium|low)
+--urgency=LEVEL       Urgency level (high|medium|low)
+--vm=NAME            VM name to migrate
+--size=MB            VM memory size in megabytes
+--cores=NUM          Number of virtual CPUs
+--tap=INTERFACE      TAP network interface
+--iterations=NUM     Number of migration iterations
+--nic=INTERFACE      Network interface to monitor
+--help               Show detailed help
+
+
+┌─────────────────────────────────────────────────────────────────────────┐
+│ EXPECTED OVERHEAD                                                        │
+└─────────────────────────────────────────────────────────────────────────┘
+
+┌─────────┬──────────────┬──────────────────┬─────────────┐
+│Strategy │ CPU Overhead │ Network Overhead │ Setup Time  │
+├─────────┼──────────────┼──────────────────┼─────────────┤
+│DEFAULT  │    0%       │       0%        │   < 1s     │
+│SSH      │  15-25%     │     5-10%       │   2-3s     │
+│TLS      │   8-15%     │      3-8%       │   3-5s     │
+│IPsec    │  10-18%     │      4-9%       │   5-7s     │
+└─────────┴──────────────┴──────────────────┴─────────────┘
+
+
+┌─────────────────────────────────────────────────────────────────────────┐
+│ TROUBLESHOOTING                                                          │
+└─────────────────────────────────────────────────────────────────────────┘
+
+Problem: Cannot determine bandwidth
+Fix: sudo apt-get install ethtool
+
+Problem: IPsec fails
+Fix: bash ipsec_manager.sh status  # Check strongSwan
+
+Problem: Script not found
+Fix: Verify SCRIPTS_BASE path in script header
+
+Problem: Permission denied
+Fix: chmod +x adaptive_migration_selector.sh
+
+
+┌─────────────────────────────────────────────────────────────────────────┐
+│ TESTING                                                                  │
+└─────────────────────────────────────────────────────────────────────────┘
+
+# Run all test scenarios
+bash test_scenarios.sh
+
+# Test specific scenario
+./adaptive_migration_selector.sh --security=medium --urgency=high \
+    --vm=test_vm --iterations=1
+
+# Check logs
+tail -f /mnt/nfs/aamir/Scripts/Migration/Automations/*/logs/*
+
+
+┌─────────────────────────────────────────────────────────────────────────┐
+│ EXAMPLE OUTPUT                                                           │
+└─────────────────────────────────────────────────────────────────────────┘
+
+╔════════════════════════════════════════════════════════════════╗
+║  Adaptive Secure VM Migration Strategy Selector               ║
+╚════════════════════════════════════════════════════════════════╝
+
+▶ Configuration
+────────────────────────────────────────────────────────────────
+[INFO] VM Name: critical_app
+[INFO] VM Size: 2048MB
+[INFO] Security Level: high
+[INFO] Urgency Level: high
+
+▶ System Resource Monitoring
+────────────────────────────────────────────────────────────────
+[INFO] CPU Usage: 45% | Available: 55%
+[INFO] Bandwidth Usage: 30% | Available: 70%
+
+▶ Resource Categorization
+────────────────────────────────────────────────────────────────
+[INFO] CPU Load Category: low
+[INFO] Bandwidth Category: low
+
+▶ Strategy Selection
+────────────────────────────────────────────────────────────────
+[INFO] Resource Available: true
+╔════════════════════════════════════════════════════════════════╗
+║  Selected Strategy: TLS                                        ║
+╚════════════════════════════════════════════════════════════════╝
+
+
+┌─────────────────────────────────────────────────────────────────────────┐
+│ NOTES                                                                    │
+└─────────────────────────────────────────────────────────────────────────┘
+
+• Single VM Migration: VMsCount is fixed (single VM)
+• Automatic Resource Detection: No manual input needed for CPU/bandwidth
+• Adaptive Selection: Strategy changes based on real-time conditions
+• SOLive Integration: Urgency levels based on research paper
+• IPsec Auto-Management: Automatically enables/disables as needed
+
+═══════════════════════════════════════════════════════════════════════════
+Version 1.0 | Algorithm 1 Implementation | January 2026
+═══════════════════════════════════════════════════════════════════════════

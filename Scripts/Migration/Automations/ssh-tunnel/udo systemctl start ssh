@@ -1,0 +1,19 @@
+○ ssh.service - OpenBSD Secure Shell server
+     Loaded: loaded (/lib/systemd/system/ssh.service; enabled; vendor preset: enabled)
+     Active: inactive (dead) since Wed 2025-09-10 15:02:48 +0530; 7min ago
+       Docs: man:sshd(8)
+             man:sshd_config(5)
+    Process: 862 ExecStart=/usr/sbin/sshd -D $SSHD_OPTS (code=exited, status=0/SUCCESS)
+   Main PID: 862 (code=exited, status=0/SUCCESS)
+        CPU: 16.964s
+
+Sep 10 15:02:05 cloudnet-s05 sshd[40473]: Disconnected from user root 10.22.196.154 port 51110
+Sep 10 15:02:05 cloudnet-s05 sshd[40473]: pam_unix(sshd:session): session closed for user root
+Sep 10 15:02:47 cloudnet-s05 sshd[40538]: Accepted password for root from 10.22.196.155 port 43904 ssh2
+Sep 10 15:02:47 cloudnet-s05 sshd[40538]: pam_unix(sshd:session): session opened for user root(uid=0) by (uid=0)
+Sep 10 15:02:48 cloudnet-s05 sshd[862]: Received signal 15; terminating.
+Sep 10 15:02:48 cloudnet-s05 sshd[40538]: Received disconnect from 10.22.196.155 port 43904:11: disconnected by user
+Sep 10 15:02:48 cloudnet-s05 sshd[40538]: Disconnected from user root 10.22.196.155 port 43904
+Sep 10 15:02:48 cloudnet-s05 sshd[40538]: pam_unix(sshd:session): session closed for user root
+Sep 10 15:02:48 cloudnet-s05 systemd[1]: ssh.service: Deactivated successfully.
+Sep 10 15:02:48 cloudnet-s05 systemd[1]: ssh.service: Consumed 16.964s CPU time.

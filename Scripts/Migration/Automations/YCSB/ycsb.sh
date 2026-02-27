@@ -1,0 +1,166 @@
+#!/bin/bash
+
+# ══════════════════════════════════════════════════════════════════════
+#  ycsb.sh  —  YCSB Workload VM Migration (Plain / No Encryption)
+# ══════════════════════════════════════════════════════════════════════
+
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+COMMON_SCRIPTS="$SCRIPT_DIR/common_scripts"
+
+# ─── Arguments ───────────────────────────────────────────────────────
+ARG_TUPLES=(
+    "--vm_img:VM_IMG:oltp"
+    "--ram_size:RAM_SIZE:1024"
+    "--cores:CORES:1"
+    "--tap:TAP:tap0"
+    "--type:TYPE:precopy"
+    "--iterations:ITERATIONS:10"
+    "--log:LOG_FOLDER:$(date "+%Y%m%d_%H%M%S")_plain"
+    "--optimization:OPTIMIZATION_SCRIPT:"
+    "--optimization_script_step:OPTIMIZATION_SCRIPT_STEP:"
+)
+PARSE_ARGS=("$@")
+source "$COMMON_SCRIPTS/arg_parser.sh"
+
+# ─── Validate ────────────────────────────────────────────────────────
+if [[ "$TYPE" != "precopy" && "$TYPE" != "postcopy" && "$TYPE" != "hybrid" && "$TYPE" != "all" ]]; then
+    echo "❌ Invalid --type=$TYPE  (valid: precopy, postcopy, hybrid, all)"
+    exit 1
+fi
+
+# ─── Infrastructure ──────────────────────────────────────────────────
+SOURCE_IP="10.22.196.152"
+DESTINATION_IP="10.22.196.154"
+VM_IP="10.22.196.209"
+VM_PASS="workingset"
+LOG_ID=""
+
+# ─── Workload ────────────────────────────────────────────────────────
+start_workload() {
+    echo ">>> Starting YCSB Workload in VM"
+    sshpass -p "$VM_PASS" ssh -o StrictHostKeyChecking=no root@"$VM_IP" \
+        "cd /home/workingset/Desktop/benchbase/target/benchbase-postgres && \
+         java -jar benchbase.jar -b ycsb \
+              -c config/postgres/sample_ycsb_config.xml \
+              -d /home/workingset/Desktop/results/${LOG_ID}_ycsb/ \
+              --create=true --load=true --execute=true -s 1 > /dev/null 2>&1 &" &
+}
+
+get_ycsb_results() {
+    echo ">>> Fetching YCSB Results"
+    local REMOTE_DIR="/home/workingset/Desktop/results/${LOG_ID}_ycsb/"
+
+    echo ">>> Waiting for $REMOTE_DIR on $VM_IP..."
+    local MAX_DIR_WAIT=300
+    local DIR_ELAPSED=0
+    local DIR_INTERVAL=10
+
+    # Extra stabilization time after migration
+    sleep 15
+
+    while [ $DIR_ELAPSED -lt $MAX_DIR_WAIT ]; do
+        if sshpass -p "$VM_PASS" ssh -o StrictHostKeyChecking=no -o ConnectTimeout=10 \
+               root@"$VM_IP" "[ -d '$REMOTE_DIR' ]" 2>/dev/null; then
+            echo ">>> Results directory found, starting rsync"
+            break
+        fi
+        echo ">>> Waiting for results dir... (${DIR_ELAPSED}s / ${MAX_DIR_WAIT}s)"
+        sleep $DIR_INTERVAL
+        DIR_ELAPSED=$((DIR_ELAPSED + DIR_INTERVAL))
+    done
+
+    if [ $DIR_ELAPSED -ge $MAX_DIR_WAIT ]; then
+        echo "⚠️  Results directory never appeared after ${MAX_DIR_WAIT}s — skipping rsync"
+        return 1
+    fi
+
+    sshpass -p "$VM_PASS" rsync \
+        -e "ssh -o StrictHostKeyChecking=no -o ConnectTimeout=30" \
+        -av --progress --no-o --no-g \
+        "root@${VM_IP}:${REMOTE_DIR}" \
+        "logs/${LOG_FOLDER}/${LOG_ID}_ycsb/"
+
+    sshpass -p "$VM_PASS" ssh -o StrictHostKeyChecking=no root@"$VM_IP" \
+        "rm -rf /home/workingset/Desktop/results/*_ycsb"
+}
+
+# ─── Single iteration ────────────────────────────────────────────────
+run_iteration() {
+    local CURRENT_TYPE=$1
+    local ITER=$2
+
+    echo ""
+    echo "=========================================="
+    echo ">>> [PLAIN] $CURRENT_TYPE — Iteration $ITER"
+    echo "=========================================="
+
+    timestamp=$(date "+%Y%m%d_%H%M%S")
+    LOG_ID="${CURRENT_TYPE}_plain_${VM_IMG}_${RAM_SIZE}_${timestamp}"
+
+    bash "$COMMON_SCRIPTS/terminate_qemu.sh" \
+        --source="$SOURCE_IP" --destination="$DESTINATION_IP"
+
+    bash "$COMMON_SCRIPTS/start_source_script.sh" \
+        --source="$SOURCE_IP" --vm_img="$VM_IMG" --ram_size="$RAM_SIZE" \
+        --cores="$CORES" --tap="$TAP" \
+        --optimization="$OPTIMIZATION_SCRIPT" \
+        --optimization_script_step="$OPTIMIZATION_SCRIPT_STEP"
+    sleep 10
+
+    bash "$COMMON_SCRIPTS/start_destination_script.sh" \
+        --destination="$DESTINATION_IP" --vm_img="$VM_IMG" --ram_size="$RAM_SIZE" \
+        --cores="$CORES" --tap="$TAP" --type="$CURRENT_TYPE" \
+        --optimization="$OPTIMIZATION_SCRIPT" \
+        --optimization_script_step="$OPTIMIZATION_SCRIPT_STEP"
+
+    bash "$COMMON_SCRIPTS/wait_util_vm_is_up.sh" --ip="$VM_IP"
+
+    bash "$COMMON_SCRIPTS/get_system_usage.sh" \
+        --ip="$VM_IP" --password="$VM_PASS" \
+        --log_folder="$LOG_FOLDER" --log_id="$LOG_ID"
+
+    sleep 20
+    start_workload
+    sleep 20
+
+    bash "$COMMON_SCRIPTS/trigger_migration.sh" \
+        --source="$SOURCE_IP" --type="$CURRENT_TYPE" --mode="plain"
+
+    bash "$COMMON_SCRIPTS/get_migration_details.sh" \
+        --source="$SOURCE_IP" --log_folder="$LOG_FOLDER" --log_id="$LOG_ID"
+
+    get_ycsb_results
+
+    echo ">>> Iteration $ITER complete."
+    echo "=========================================="
+}
+
+# ─── Main ────────────────────────────────────────────────────────────
+echo "══════════════════════════════════════════════"
+echo "  YCSB Plain Migration  |  $(date)"
+echo "  VM: $VM_IMG | RAM: ${RAM_SIZE}MB | Type: $TYPE | Iters: $ITERATIONS"
+echo "══════════════════════════════════════════════"
+
+bash "$COMMON_SCRIPTS/script_init.sh" \
+    --log_folder="$LOG_FOLDER" --optimization="$OPTIMIZATION_SCRIPT"
+
+[[ "$TYPE" == "all" ]] && MIGRATION_TYPES=("precopy" "postcopy" "hybrid") || MIGRATION_TYPES=("$TYPE")
+
+for CURRENT_TYPE in "${MIGRATION_TYPES[@]}"; do
+    echo ""
+    echo "######################################################"
+    echo "#  Starting PLAIN $CURRENT_TYPE  ($ITERATIONS iterations)"
+    echo "######################################################"
+    for (( i=1; i<=ITERATIONS; i++ )); do
+        run_iteration "$CURRENT_TYPE" "$i"
+    done
+done
+
+bash "$COMMON_SCRIPTS/terminate_qemu.sh" \
+    --source="$SOURCE_IP" --destination="$DESTINATION_IP" \
+    --vm_ip="$VM_IP" --password="$VM_PASS"
+
+echo ""
+echo "══════════════════════════════════════════════"
+echo "  PLAIN YCSB Complete  |  Logs: logs/$LOG_FOLDER"
+echo "══════════════════════════════════════════════"

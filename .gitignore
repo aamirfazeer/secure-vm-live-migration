@@ -6,27 +6,16 @@ vm-images/
 *.log
 logs/
 
-# Ignore backup archives
+# Ignore backup files
 *.tar.gz
 *.backup
 
-# Ignore compiled C/C++ files
+# Ignore compiled files
 *.o
 *.out
 a.out
 
-# Ignore temporary/editor files
+# Ignore temporary files
 *.tmp
 *.swp
 *~
-
-# Ignore Git metadata from subfolders
-**/.git/
-
-# Ignore build directories
-build/
-dist/
-
-# Ignore system files
-.DS_Store
-Thumbs.db

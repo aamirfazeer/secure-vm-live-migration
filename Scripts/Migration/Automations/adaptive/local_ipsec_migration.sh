@@ -1,0 +1,216 @@
+#!/bin/bash
+
+################################################################################
+# Local IPSEC Migration Script for Adaptive Selector
+# This script is called by the adaptive migration selector
+################################################################################
+
+# Array of "tuples": --flag:VAR_NAME:default_value
+ARG_TUPLES=(
+  "--vm:VM:idle"
+  "--size:SIZE:1024"
+  "--cores:CORES:1"
+  "--tap:TAP:tap0"
+  "--type:TYPE:precopy"
+  "--iterations:ITERATIONS:10"
+  "--log:LOG_FOLDER:"
+)
+
+# Initialize variables with defaults
+for tuple in "${ARG_TUPLES[@]}"; do
+  IFS=":" read -r FLAG VAR DEFAULT <<< "$tuple"
+  declare "$VAR=$DEFAULT"
+done
+
+# Parse arguments
+for ARG in "$@"; do
+  KEY="${ARG%%=*}"
+  VALUE="${ARG#*=}"
+  MATCHED=false
+
+  for tuple in "${ARG_TUPLES[@]}"; do
+    IFS=":" read -r FLAG VAR DEFAULT <<< "$tuple"
+    if [[ "$KEY" == "$FLAG" ]]; then
+      declare "$VAR=$VALUE"
+      MATCHED=true
+      break
+    fi
+  done
+
+  if ! $MATCHED; then
+    echo "Unknown argument: $ARG"
+    exit 1
+  fi
+done
+
+SOURCE_IP="10.22.196.152"
+DESTINATION_IP="10.22.196.154"
+VM_IP="10.22.196.250"
+
+# SSH credentials
+SOURCE_PASS="primedirective"
+DEST_PASS="primedirective"
+VM_PASS="vmpassword"
+
+# Logs directory
+LOGS_BASE="/mnt/nfs/aamir/Scripts/Migration/Automations/adaptive/logs"
+
+# If LOG_FOLDER not provided, create default one
+if [ -z "$LOG_FOLDER" ]; then
+    timestamp=$(date "+%Y%m%d_%H%M%S")
+    LOG_FOLDER="ipsec_${VM}_${SIZE}MB_${CORES}cores_${TYPE}_${timestamp}"
+fi
+
+LOG_PATH="${LOGS_BASE}/${LOG_FOLDER}"
+mkdir -p "$LOG_PATH"
+
+LOG_ID=""
+POST_COPYABLE=""
+MIGRATION=""
+
+terminate_qemu() {
+    sshpass -p "$VM_PASS" ssh -o StrictHostKeyChecking=no -o ConnectTimeout=60 root@$VM_IP "poweroff" > /dev/null 2>&1
+    sleep 5
+
+    DESTINATION_CHECK=$(sshpass -p "$DEST_PASS" ssh -o StrictHostKeyChecking=no root@$DESTINATION_IP "pgrep qemu")
+    if [[ -n $DESTINATION_CHECK ]]; then
+        sshpass -p "$DEST_PASS" ssh -o StrictHostKeyChecking=no root@$DESTINATION_IP "pkill qemu"
+    fi
+    sleep 5
+    sshpass -p "$SOURCE_PASS" ssh -o StrictHostKeyChecking=no root@$SOURCE_IP "pkill qemu"
+}
+
+get_migration_details() {
+    MIGRATION=""
+    sleep 30
+
+    MAX_RETRIES=20
+    RETRY=0
+    while [[ $MIGRATION != *"completed"* && $RETRY -lt $MAX_RETRIES ]]; do
+        sleep 10
+        echo ">>> Checking for Migration Status (Attempt $((RETRY + 1))/$MAX_RETRIES)"
+
+        MIGRATION=$(sshpass -p "$SOURCE_PASS" ssh -o StrictHostKeyChecking=no root@$SOURCE_IP \
+            "bash /mnt/nfs/aamir/Scripts/Migration/Status/migration-status.sh")
+
+        ((RETRY++))
+    done
+
+    if [[ $MIGRATION == *"completed"* ]]; then
+        echo ">>> Migration completed successfully."
+        echo "$MIGRATION" > "${LOG_PATH}/${LOG_ID}_migration_status.txt"
+    else
+        echo ">>> Migration did not complete after $MAX_RETRIES attempts."
+        echo "Migration timeout" > "${LOG_PATH}/${LOG_ID}_migration_status.txt"
+    fi
+}
+
+start_destination() {
+    local CURRENT_TYPE=$1
+    echo ">>> Starting Destination VM for $CURRENT_TYPE"
+    
+    if [ "$CURRENT_TYPE" = "precopy" ]; then
+        POST_COPYABLE="false"
+    else
+        POST_COPYABLE="true"
+    fi
+    
+    sshpass -p "$DEST_PASS" ssh -o StrictHostKeyChecking=no root@$DESTINATION_IP \
+        "bash /mnt/nfs/aamir/Scripts/Migration/Automations/vm-start/startDestination.sh $VM $TAP $SIZE $CORES $POST_COPYABLE" &
+}
+
+start_source() {
+    echo ">>> Starting Source VM"
+    sshpass -p "$SOURCE_PASS" ssh -o StrictHostKeyChecking=no root@$SOURCE_IP \
+        "bash /mnt/nfs/aamir/Scripts/General/startSource.sh $VM $SIZE $CORES $TAP" &
+}
+
+start_workload() {
+    echo ">>> Starting Quicksort Workload"
+    
+    echo ">>> Waiting for VM to be ready..."
+    MAX_WAIT=60
+    WAIT_COUNT=0
+    while ! sshpass -p "$VM_PASS" ssh -o StrictHostKeyChecking=no -o ConnectTimeout=5 root@$VM_IP "echo 'VM Ready'" > /dev/null 2>&1; do
+        sleep 5
+        WAIT_COUNT=$((WAIT_COUNT + 5))
+        if [ $WAIT_COUNT -ge $MAX_WAIT ]; then
+            echo ">>> WARNING: VM not accessible after ${MAX_WAIT}s"
+            break
+        fi
+    done
+    
+    if ! sshpass -p "$VM_PASS" ssh -o StrictHostKeyChecking=no root@$VM_IP "test -x /home/vmuser/Desktop/quicksort"; then
+        echo ">>> ERROR: quicksort binary not found"
+        return 1
+    fi
+    
+    sshpass -p "$VM_PASS" ssh -o StrictHostKeyChecking=no root@$VM_IP \
+        "cd /home/vmuser/Desktop && ./quicksort" > "${LOG_PATH}/${LOG_ID}_workload.txt" 2>&1 &
+    
+    echo ">>> Quicksort started"
+}
+
+trigger_migration() {
+    local CURRENT_TYPE=$1
+    echo ">>> Triggering $CURRENT_TYPE Migration"
+    
+    TRIGGERS="/mnt/nfs/aamir/Scripts/Migration/Triggers"
+
+    if [ "$CURRENT_TYPE" = "precopy" ]; then
+        sshpass -p "$SOURCE_PASS" ssh -o StrictHostKeyChecking=no root@$SOURCE_IP \
+            "bash $TRIGGERS/Pre-Copy/precopy-vm-migrate1.sh"
+    elif [ "$CURRENT_TYPE" = "postcopy" ]; then
+        sshpass -p "$SOURCE_PASS" ssh -o StrictHostKeyChecking=no root@$SOURCE_IP \
+            "bash $TRIGGERS/Post-Copy/postcopy-vm-migrate.sh"
+    elif [ "$CURRENT_TYPE" = "hybrid" ]; then
+        sshpass -p "$SOURCE_PASS" ssh -o StrictHostKeyChecking=no root@$SOURCE_IP \
+            "bash $TRIGGERS/Hybrid/hybrid-vm-migrate.sh auto"
+    fi
+}
+
+run_single_iteration() {
+    local CURRENT_TYPE=$1
+    local ITER=$2
+    
+    echo "=========================================="
+    echo ">>> IPSEC Migration: $CURRENT_TYPE - Iteration $ITER"
+    echo "=========================================="
+
+    timestamp=$(date "+%Y%m%d_%H%M%S")
+    LOG_ID="iter${ITER}_${CURRENT_TYPE}_${timestamp}"
+
+    start_source
+    start_destination "$CURRENT_TYPE"
+    sleep 30
+    
+    start_workload
+    sleep 30
+    
+    trigger_migration "$CURRENT_TYPE"
+    get_migration_details
+    
+    terminate_qemu
+    sleep 10
+}
+
+# Main execution
+echo ">>> Starting IPSEC Migration"
+echo ">>> Log Path: $LOG_PATH"
+
+terminate_qemu
+
+if [ "$TYPE" = "all" ]; then
+    MIGRATION_TYPES=("precopy" "postcopy" "hybrid")
+else
+    MIGRATION_TYPES=("$TYPE")
+fi
+
+for CURRENT_TYPE in "${MIGRATION_TYPES[@]}"; do
+    for (( i=1; i<=$ITERATIONS; i++ )); do
+        run_single_iteration "$CURRENT_TYPE" "$i"
+    done
+done
+
+echo ">>> IPSEC Migration Complete"
+echo ">>> Logs: $LOG_PATH"
