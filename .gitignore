@@ -1,0 +1,32 @@
+# Ignore QEMU and VM images
+Qemu/
+vm-images/
+
+# Ignore log files
+*.log
+logs/
+
+# Ignore backup archives
+*.tar.gz
+*.backup
+
+# Ignore compiled C/C++ files
+*.o
+*.out
+a.out
+
+# Ignore temporary/editor files
+*.tmp
+*.swp
+*~
+
+# Ignore Git metadata from subfolders
+**/.git/
+
+# Ignore build directories
+build/
+dist/
+
+# Ignore system files
+.DS_Store
+Thumbs.db
